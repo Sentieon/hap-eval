@@ -125,10 +125,12 @@ class IntervalList(object):
         return r and bisect.bisect_right(r, s) % 2 != 0
 
 class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
-    params = ( # name, defval, descr
-        ('maxdist',     1000,   'Maximum distance to cluster variants'),
-        ('minsize',     50,     'Minimum size of variants to consider'),
-        ('maxdiff',     0.2,    'Haplotype difference theshold'),
+    params = ( # name, defval, descr, kwargs
+        ('maxdist',     1000,   'Maximum distance to cluster variants', {}),
+        ('minsize',     50,     'Minimum size of variants to consider', {}),
+        ('maxdiff',     0.2,    'Haplotype difference theshold', {}),
+        ('metric',      'Levenshtein',
+            'Distance metric', {"choices": ['Levenshtein', 'Length']}),
     )
 
     def __init__(self, ref, vcf1, vcf2, bed, args):
@@ -138,6 +140,16 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
         self.bed = bed and IntervalList(bed) or None
         self.args = args
         self.log = None
+        self.diff = self.diff_by_len
+        if args.metric == 'Levenshtein':
+            if 'Levenshtein' in sys.modules:
+                self.diff = self.diff_by_lev
+            else:
+                print(
+                    'Levenshtein module not available. Falling back to length'
+                    ' comparison.',
+                    file=sys.stderr
+                )
 
     def __shard__(self, cse):
         self.shard = cse
@@ -165,9 +177,9 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
 
     @classmethod
     def add_arguments(cls, parser):
-        for k,v,h in cls.params:
+        for k,v,h,kwargs in cls.params:
             h += ' (default: %(default)s)'
-            parser.add_argument('--'+k, default=v, type=type(v), help=h)
+            parser.add_argument('--'+k, default=v, type=type(v), help=h, **kwargs)
 
     @staticmethod
     def cluster(vcfs, c, s, e, maxdist, pred):
@@ -316,10 +328,6 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
         summary = collections.Counter()
         vcfs = (self.vcf1, self.vcf2)
         pred = self.filter
-        if 'Levenshtein' in sys.modules:
-            diff = self.diff_by_lev
-        else:
-            diff = self.diff_by_len
         maxdist = self.args.maxdist
         maxdiff = self.args.maxdiff
         minsize = self.args.minsize
@@ -340,15 +348,13 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
                 for h0 in self.reassemble(c, s, e, r, g0):
                     for h1 in self.reassemble(c, s, e, r, g1):
                         for hh in itertools.permutations(h1):
-                            d = [diff(a,b) for a,b in zip(h0,hh)]
+                            d = [self.diff(a,b) for a,b in zip(h0,hh)]
                             dd = min(d)
                             if best[0] > dd:
                                 best = (dd, h0, hh, d)
                 dd, h0, h1, d = best
                 if d is None:
                     call = '??'
-                    #for v in g0: print(v.line, file=sys.stderr)
-                    #for v in g1: print(v.line, file=sys.stderr)
                 elif min(d) > maxdiff:
                     call = 'XX'
                 elif max(d) > maxdiff:
