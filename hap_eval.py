@@ -140,16 +140,6 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
         self.bed = bed and IntervalList(bed) or None
         self.args = args
         self.log = None
-        self.diff = self.diff_by_len
-        if args.metric == 'Levenshtein':
-            if 'Levenshtein' in sys.modules:
-                self.diff = self.diff_by_lev
-            else:
-                print(
-                    'Levenshtein module not available. Falling back to length'
-                    ' comparison.',
-                    file=sys.stderr
-                )
 
     def __shard__(self, cse):
         self.shard = cse
@@ -315,7 +305,7 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
     @staticmethod
     def diff_by_len(a, b):
         la, lb = len(a), len(b)
-        return abs(la-lb)/max(la,lb)
+        return abs(la-lb)/float(max(la,lb))
 
     @staticmethod
     def diff_by_lev(a, b):
@@ -328,6 +318,16 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
         summary = collections.Counter()
         vcfs = (self.vcf1, self.vcf2)
         pred = self.filter
+        diff = self.diff_by_len
+        if self.args.metric == 'Levenshtein':
+            if 'Levenshtein' in sys.modules:
+                diff = self.diff_by_lev
+            else:
+                print(
+                    'Levenshtein module not available. Falling back to length'
+                    ' comparison.',
+                    file=sys.stderr
+                )
         maxdist = self.args.maxdist
         maxdiff = self.args.maxdiff
         minsize = self.args.minsize
@@ -348,7 +348,7 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
                 for h0 in self.reassemble(c, s, e, r, g0):
                     for h1 in self.reassemble(c, s, e, r, g1):
                         for hh in itertools.permutations(h1):
-                            d = [self.diff(a,b) for a,b in zip(h0,hh)]
+                            d = [diff(a,b) for a,b in zip(h0,hh)]
                             dd = min(d)
                             if best[0] > dd:
                                 best = (dd, h0, hh, d)
