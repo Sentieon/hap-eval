@@ -3,7 +3,6 @@ from __future__ import print_function
 import argparse
 import bisect
 import collections
-import difflib
 import functools
 import heapq
 import io
@@ -24,6 +23,14 @@ except:
     pass
 
 Contig = collections.namedtuple('Contig', 'length offset width skip')
+
+HAP_EVAL_HDRS = [
+    '##INFO=<ID=CALL,Number=1,Type=String,Description="Evaluation call of the'
+    ' comparison VCF relative to the baseline VCF">',
+    '##INFO=<ID=CALL_REGION,Number=1,Type=String,Description="Evaluation region'
+    ' for the variant">',
+]
+
 
 class Reference(object):
     def __init__(self, path):
@@ -311,7 +318,9 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
     def diff_by_lev(a, b):
         return 1. - Levenshtein.ratio(a, b)
 
-    def evaluate(self, contig=None, start=0, end=0x7fffffff):
+    def evaluate(
+        self, base_out, comp_out, contig=None, start=0, end=0x7fffffff
+    ):
         if contig is None:
             contig, start, end = getattr(self, 'shard')
         log = self.log or sys.stdout
@@ -333,6 +342,7 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
         minsize = self.args.minsize
         for g in self.cluster(vcfs, contig, start, end, maxdist, pred):
             c, s, e = contig, g[0][1].pos, g[-1][1].end
+            call_region = "{}:{}-{}".format(c, s, e)
             if self.bed and not self.bed.get(c, s, e):
                 continue
             g0 = [x[1] for x in g if x[0] == 0]
@@ -370,6 +380,17 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
                 call = 'FN'
             elif g1:
                 call = 'FP'
+
+            for out_vcf, g, err in zip(
+                (base_out, comp_out), (g0, g1), ('FN', 'FP')
+            ):
+                if out_vcf:
+                    for v in g:
+                        v.line = None  # Update the string representation
+                        v.info['CALL'] = 'TP' if call == 'MM' else err
+                        v.info['CALL_REGION'] = call_region
+                        out_vcf.emit(v)
+
             print(call, '%s:%d-%d' % (c,s+1,e), *map(str, desc), file=log)
             summary[call] += 1
         return summary
@@ -399,6 +420,10 @@ def main():
         help='Evaluation region file', dest='bed')
     parser.add_argument('-t', '--thread_count', required=False, type=int,
         help='Number of threads', dest='nthr')
+    parser.add_argument('--base_out', metavar='VCF',
+        help='Annotated baseline vcf file')
+    parser.add_argument('--comp_out', metavar='VCF',
+        help='Annotated comparison vcf file')
     parser.add_argument('--step_size', default=100*1000*1000, type=int,
         help=argparse.SUPPRESS, dest='step')
     VCFEvaluator.add_arguments(parser)
@@ -406,11 +431,28 @@ def main():
     args = parser.parse_args()
     eval = VCFEvaluator(args.ref, args.base, args.comp, args.bed, args)
 
+    out_vcfs = []
+    for vcf, out_vcf in zip(
+        (eval.vcf1, eval.vcf2), (args.base_out, args.comp_out)
+    ):
+        if out_vcf:
+            out_vcf = vcflib.VCF(out_vcf, 'wb')
+            out_vcf.copy_header(
+                vcf,
+                update=HAP_EVAL_HDRS,
+            )
+            out_vcf.emit_header()
+        out_vcfs.append(out_vcf)
+
     sharder = vcflib.Sharder(args.nthr)
     shards = sharder.cut(eval.contigs, args.step)
-    result = sharder.run(shards, VCFEvaluator.evaluate, [], eval)
+    result = sharder.run(shards, VCFEvaluator.evaluate, [], eval, *out_vcfs)
     summary = sum(result, collections.Counter())
     print(summary)
+
+    for out_vcf in out_vcfs:
+        if out_vcf:
+            out_vcf.close()
 
     tp = float(summary['MM'])
     ff = summary['MX'] + summary['XX'] + summary['??']

@@ -26,6 +26,8 @@ optional arguments:
                         Evaluation region file
   -t INT, --thread_count INT
                         Number of threads
+  --base_out VCF        Annotated baseline vcf file
+  --comp_out VCF        Annotated comparison vcf file
   --maxdist INT         Maximum distance to cluster variants (default: 1000)
   --minsize INT         Minimum size of variants to consider (default: 50)
   --maxdiff FLOAT       Haplotype difference theshold (default: 0.2)
