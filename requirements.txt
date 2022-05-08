@@ -1,0 +1,1 @@
+python-Levenshtein >= 0.11.2

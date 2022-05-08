@@ -396,12 +396,6 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
         return summary
 
 class MixedHelpFormatter(argparse.HelpFormatter):
-    def _format_usage(self, usage, actions, groups, prefix):
-        if prefix is None:
-            prefix = 'usage: sentieon pyexec '
-        return argparse.HelpFormatter._format_usage(
-            self, usage, actions, groups, prefix)
-
     def _metavar_formatter(self, action, default):
         if action.metavar is None and action.type is not None:
             action.metavar = action.type.__name__.upper()
