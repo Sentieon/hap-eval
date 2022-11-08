@@ -29,6 +29,8 @@ HAP_EVAL_HDRS = [
     ' comparison VCF relative to the baseline VCF">',
     '##INFO=<ID=CALL_REGION,Number=1,Type=String,Description="Evaluation region'
     ' for the variant">',
+    '##INFO=<ID=SVLEN,Number=A,Type=Integer,Description="Difference in length'
+    ' between REF and ALT alleles">',
 ]
 
 
