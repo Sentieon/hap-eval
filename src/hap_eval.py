@@ -223,7 +223,8 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
     def fixup(v):
         # correct various reporting problems
         if any(a == '<DUP>' for a in v.alt):
-            # many tools make the mistake of setting END=POS+SVLEN!
+            # We represent DUPs as left-aligned insertions for a consistent
+            # representation with simple insertion alleles
             v.end = v.pos + len(v.ref)
         svlen = v.info.get('SVLEN')
         if not isinstance(svlen, list):
@@ -391,6 +392,8 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
                         v.line = None  # Update the string representation
                         v.info['CALL'] = 'TP' if call == 'MM' else err
                         v.info['CALL_REGION'] = call_region
+                        if any(a == '<DUP>' for a in v.alt):
+                            v.end = v.info.get('END', v.pos + len(v.ref))
                         out_vcf.emit(v)
 
             print(call, '%s:%d-%d' % (c,s+1,e), *map(str, desc), file=log)
