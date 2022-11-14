@@ -290,6 +290,8 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
                         continue
                     v = g[i]
                     a = v.alt[p[i]-1]
+                    if a == "*":  # Skip upstream deletion alleles
+                        continue
                     if v.pos+1 == t and v.ref[0] == a[0]:
                         # deletion followed by insertion
                         pass
