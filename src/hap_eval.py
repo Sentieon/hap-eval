@@ -249,7 +249,8 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
             return self.fixup(v)
         return True
 
-    def reassemble(self, c, s, e, r, g):
+    @staticmethod
+    def reassemble(c, s, e, r, g, ref):
         combos = []
         phased = 0
         for v in g:
@@ -303,7 +304,7 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
                         t = v.end
                     elif a == '<DUP>':
                         n = v.info['SVLEN'][p[i]-1]
-                        a = self.ref.get(c, v.pos, v.pos+1+n)
+                        a = ref.get(c, v.pos, v.pos+1+n)
                         t = v.pos+1
                     else:
                         t = v.pos+1 + max(len(v.ref)-len(a),0)
@@ -322,6 +323,82 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
     @staticmethod
     def diff_by_lev(a, b):
         return 1. - Levenshtein.ratio(a, b)
+
+
+    @staticmethod
+    def evaluate_cluster(
+        g, contig, ref, diff, bed=None, maxdiff=0.2, minsize=50, log=sys.stdout
+    ):
+        c, s, e = contig, g[0][1].pos, g[-1][1].end
+        if bed and not bed.get(c, s, e):
+            return None
+        g0 = [x[1] for x in g if x[0] == 0]
+        g1 = [x[1] for x in g if x[0] == 1]
+        if (
+            VCFEvaluator.maxsize(g0) < minsize
+            and VCFEvaluator.maxsize(g1) < minsize
+        ):
+            return None
+        s = max(s-100, 0)
+        r = ref.get(c, s, e+100)
+        e = s + len(r)
+        desc = [len(g0), len(g1)]
+        if g0 and g1:
+            best = (999, None, None, None)
+            for h0 in VCFEvaluator.reassemble(c, s, e, r, g0, ref):
+                for h1 in VCFEvaluator.reassemble(c, s, e, r, g1, ref):
+                    for hh in itertools.permutations(h1):
+                        d = [diff(a,b) for a,b in zip(h0,hh)]
+                        dd = min(d)
+                        if best[0] > dd:
+                            best = (dd, h0, hh, d)
+            dd, h0, h1, d = best
+            if d is None:
+                call = '??'
+            elif min(d) > maxdiff:
+                call = 'XX'
+            elif max(d) > maxdiff:
+                call = 'MX'
+            else:
+                call = 'MM'
+            if d is not None:
+                desc.extend((len(r),
+                    '('+','.join(str(len(h)-len(r)) for h in h0)+')',
+                    '('+','.join(str(len(h)-len(r)) for h in h1)+')',
+                    '%.3f' % max(d)))
+        elif g0:
+            call = 'FN'
+            best = (999999999, None)
+            for h0 in VCFEvaluator.reassemble(c, s, e, r, g0, ref):
+                dd = max(abs(len(h)-len(r)) for h in h0)
+                if best[0] > dd:
+                    best = (dd, h0)
+            dd, h0 = best
+            if dd < minsize:
+                return None
+            if h0:
+                desc.extend((len(r),
+                    '('+','.join(str(len(h)-len(r)) for h in h0)+')',
+                    '(0,0)',
+                    1.))
+        elif g1:
+            call = 'FP'
+            best = (999999999, None)
+            for h1 in VCFEvaluator.reassemble(c, s, e, r, g1, ref):
+                dd = max(abs(len(h)-len(r)) for h in h1)
+                if best[0] > dd:
+                    best = (dd, h1)
+            dd, h1 = best
+            if dd < minsize:
+                return None
+            if h1:
+                desc.extend((len(r),
+                    '(0,0)',
+                    '('+','.join(str(len(h)-len(r)) for h in h1)+')',
+                    1.))
+        print(call, '%s:%d-%d' % (c,s+1,e), *map(str, desc), file=log)
+        return call
+
 
     def evaluate(
         self, base_out, comp_out, contig=None, start=0, end=0x7fffffff
@@ -343,75 +420,23 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
                     file=sys.stderr
                 )
         maxdist = self.args.maxdist
-        maxdiff = self.args.maxdiff
-        minsize = self.args.minsize
         for g in self.cluster(vcfs, contig, start, end, maxdist, pred):
-            c, s, e = contig, g[0][1].pos, g[-1][1].end
-            call_region = "{}:{}-{}".format(c, s, e)
-            if self.bed and not self.bed.get(c, s, e):
+            call = self.evaluate_cluster(
+                g,
+                contig,
+                self.ref,
+                diff,
+                bed=self.bed,
+                maxdiff=self.args.maxdiff,
+                minsize=self.args.minsize,
+                log=log,
+            )
+            if not call:
                 continue
+
             g0 = [x[1] for x in g if x[0] == 0]
             g1 = [x[1] for x in g if x[0] == 1]
-            if self.maxsize(g0) < minsize and self.maxsize(g1) < minsize:
-                continue
-            s = max(s-100, 0)
-            r = self.ref.get(c, s, e+100)
-            e = s + len(r)
-            desc = [len(g0), len(g1)]
-            if g0 and g1:
-                best = (999, None, None, None)
-                for h0 in self.reassemble(c, s, e, r, g0):
-                    for h1 in self.reassemble(c, s, e, r, g1):
-                        for hh in itertools.permutations(h1):
-                            d = [diff(a,b) for a,b in zip(h0,hh)]
-                            dd = min(d)
-                            if best[0] > dd:
-                                best = (dd, h0, hh, d)
-                dd, h0, h1, d = best
-                if d is None:
-                    call = '??'
-                elif min(d) > maxdiff:
-                    call = 'XX'
-                elif max(d) > maxdiff:
-                    call = 'MX'
-                else:
-                    call = 'MM'
-                if d is not None:
-                    desc.extend((len(r),
-                        '('+','.join(str(len(h)-len(r)) for h in h0)+')',
-                        '('+','.join(str(len(h)-len(r)) for h in h1)+')',
-                        '%.3f' % max(d)))
-            elif g0:
-                call = 'FN'
-                best = (999999999, None)
-                for h0 in self.reassemble(c, s, e, r, g0):
-                    dd = max(abs(len(h)-len(r)) for h in h0)
-                    if best[0] > dd:
-                        best = (dd, h0)
-                dd, h0 = best
-                if dd < minsize:
-                    continue
-                if h0:
-                    desc.extend((len(r),
-                        '('+','.join(str(len(h)-len(r)) for h in h0)+')',
-                        '(0,0)',
-                        1.))
-            elif g1:
-                call = 'FP'
-                best = (999999999, None)
-                for h1 in self.reassemble(c, s, e, r, g1):
-                    dd = max(abs(len(h)-len(r)) for h in h1)
-                    if best[0] > dd:
-                        best = (dd, h1)
-                dd, h1 = best
-                if dd < minsize:
-                    continue
-                if h1:
-                    desc.extend((len(r),
-                        '(0,0)',
-                        '('+','.join(str(len(h)-len(r)) for h in h1)+')',
-                        1.))
-
+            call_region = "{}:{}-{}".format(contig, g[0][1].pos, g[-1][1].end)
             for out_vcf, g, err in zip(
                 (base_out, comp_out), (g0, g1), ('FN', 'FP')
             ):
@@ -424,7 +449,6 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
                             v.end = v.info.get('END', v.pos + len(v.ref))
                         out_vcf.emit(v)
 
-            print(call, '%s:%d-%d' % (c,s+1,e), *map(str, desc), file=log)
             summary[call] += 1
         return summary
 
@@ -435,7 +459,8 @@ class MixedHelpFormatter(argparse.HelpFormatter):
         return argparse.HelpFormatter._metavar_formatter(
             self, action, default)
 
-def main():
+
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(formatter_class=MixedHelpFormatter)
     parser.add_argument('-r', '--reference', required=True, metavar='FASTA',
         help='Reference file', dest='ref')
@@ -454,8 +479,11 @@ def main():
     parser.add_argument('--step_size', default=100*1000*1000, type=int,
         help=argparse.SUPPRESS, dest='step')
     VCFEvaluator.add_arguments(parser)
+    return parser.parse_args(argv)
 
-    args = parser.parse_args()
+
+def main():
+    args = parse_args()
     eval = VCFEvaluator(args.ref, args.base, args.comp, args.bed, args)
 
     out_vcfs = []
