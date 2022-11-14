@@ -381,8 +381,34 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
                         '%.3f' % max(d)))
             elif g0:
                 call = 'FN'
+                best = (999999999, None)
+                for h0 in self.reassemble(c, s, e, r, g0):
+                    dd = max(abs(len(h)-len(r)) for h in h0)
+                    if best[0] > dd:
+                        best = (dd, h0)
+                dd, h0 = best
+                if dd < minsize:
+                    continue
+                if h0:
+                    desc.extend((len(r),
+                        '('+','.join(str(len(h)-len(r)) for h in h0)+')',
+                        '(0,0)',
+                        1.))
             elif g1:
                 call = 'FP'
+                best = (999999999, None)
+                for h1 in self.reassemble(c, s, e, r, g1):
+                    dd = max(abs(len(h)-len(r)) for h in h1)
+                    if best[0] > dd:
+                        best = (dd, h1)
+                dd, h1 = best
+                if dd < minsize:
+                    continue
+                if h1:
+                    desc.extend((len(r),
+                        '(0,0)',
+                        '('+','.join(str(len(h)-len(r)) for h in h1)+')',
+                        1.))
 
             for out_vcf, g, err in zip(
                 (base_out, comp_out), (g0, g1), ('FN', 'FP')
