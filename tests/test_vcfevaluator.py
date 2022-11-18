@@ -8,7 +8,13 @@ import vcflib
 REGION1_REF = "AACCATTTTTTAAACCAAATCCAGGCTCTGAGACACCCCTGCTATGACTTTACTGGACCTATATACTACGGAGAAGAGGGCTTGTTTGGCAGCACAGCTTTTGTGTGTGTGTGTGTGGGGGGGGGGGGGGGGGGTGGGGGTGGGGGGTGTCAGACCCCGAGGCTACCCTTCTGGGGTTTTGTTTAGATTCTTCTGTGCAAGTTCCCACCAAGTTTTCAGTGAGTTAGACTTTCAGGGTAATCCCGGTTTGCCTTGCAAAGCTGAGGAAATGAGGAATGTCATGGGTATCAATATCTTTCCTGAGAACTGAAATTTACCAGTAGCACATTCCTATCGGGCATTTATCAAAACAAACATATAGGTCAAATGACCGTTTACTCAGCAGCCACCTGTCAGTGCCTTGGGACGTCAGCAGTCCCGGGGATGCCCGTCAAAGCAGCTGAGTGATCTCGGCCCTGAACATTGCCAACTTCCCGCCTGATGCCCTGGAGCTGAGGCTCCAGCTTGAGGCTTCCCAGTGCTTTGGATAAAAAGATGGGTCTGCACCTGAGAGCCATATACATCTCGCTCTGGGGAGAAAACCCAGGCAGGGCTTTCACACAGAGGAAGAGTGAGGCCAGGATTTATACTCAGAGAGGATGGGCAAATAGCATTCACGCGTGTGTCCTCCAGGGTGGAATCTGCCAGGCTGACTTACAGTGCAGGAATTTTGCCAGTCAGTGGAGGTAGATGTGTTTATAGATAACGTTAAAAAAAAAAAAAAAGGCAAAAACCAAGACCTCTGCAACCTTGGTATTTGAAACACAGAACACGGGTTTGTGTACTAAGTAAAATGTGGTTAAATAAGATTAATCTATTGATGGTGGGGAAGAGAGCCTGTAAGGCAGATTGGGTGTCTCAGAGGCATAATTATTTATCAAACTAATTAAAATGTAACCACCGGCTCATCGACTCTGGAAACCGGCTTTCCTGCCCAAGAAGCAGCCCTCTCCTGAGCACCTGTGATTTTATTTTTCATTCATTATCCCACTGAAACACAAAACAAAGACCCAAATTGGCCACCTGGAGTGGCCGCTCTCACCCTCTGCCTGGCCATGGCCTGCCTGGACTGGGTGTTGGGGAGGGATGCATGGGGACAGTGTTGTTCACAGTGTGGGTGAGTGAGTGAGCCCACCTGGTCCCCCATGAAGCCCTGAGATGCCAGGAGCTCTACTGGCTGTGGCCTGGGGCTGTGTGATGGAGAGCACGTGTGTTCATCAGCGCCCAGAGGCCTGGGCTATTCAGTTGGGCCATCTCTGCAGCCCAGAGCTGCCTGGTAGGGCTTTGCCATGGATTCCTGGCTTGGAGGAGTCATGATTAGCATGAACTTGCAAACCCAGACCAGGCGAATTGACTTGGGGG"
 
 
-def test_evaluate_cluster_phased1():
+def test_evaluate_cluster_phased():
+    contig = "1"
+    ref = Mock()
+    ref.get = lambda a, b, c: REGION1_REF
+    diff = hap_eval.VCFEvaluator.diff_by_len
+
+    # Variant alleles are < minsize
     call_variants = [
         vcflib.Variant(
             "1", 7395183, '.', "T", ["TTTTGTGTGTGTGTGTGTGTGTGTGTGTGTGTG"],
@@ -24,14 +30,10 @@ def test_evaluate_cluster_phased1():
         ),
     ]
     g = [(1, x) for x in call_variants]
-    contig = "1"
-    ref = Mock()
-    ref.get = lambda a, b, c: REGION1_REF
-    diff = hap_eval.VCFEvaluator.diff_by_len
     call = hap_eval.VCFEvaluator.evaluate_cluster(g, contig, ref, diff)
     assert call is None
 
-def test_evaluate_cluster_phased2():
+    # Phased variants, together, are larger than minsize
     call_variants = [
         vcflib.Variant(
             "1", 7395183, '.', "T", ["TTTTGTGTGTGTGTGTGTGTGTGTGTGTGTGTG"],
@@ -47,14 +49,27 @@ def test_evaluate_cluster_phased2():
         ),
     ]
     g = [(1, x) for x in call_variants]
+    call = hap_eval.VCFEvaluator.evaluate_cluster(g, contig, ref, diff)
+    assert call is "FP"
+
+    # Variant is an FP - size > minsize
+    call_variants = [
+        vcflib.Variant(
+            "1", 7395183, '.', "T", ["TTTTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGATGTCGATACGATGCTAGCTACTGATCG"],
+            100.0, [], {}, [{'GT': '1|0'}], 7395184, None
+        ),
+    ]
+    g = [(1, x) for x in call_variants]
+    call = hap_eval.VCFEvaluator.evaluate_cluster(g, contig, ref, diff)
+    assert call is "FP"
+
+def test_evaluate_cluster_unphased():
     contig = "1"
     ref = Mock()
     ref.get = lambda a, b, c: REGION1_REF
     diff = hap_eval.VCFEvaluator.diff_by_len
-    call = hap_eval.VCFEvaluator.evaluate_cluster(g, contig, ref, diff)
-    assert call is "FP"
 
-def test_evaluate_cluster_unphased1():
+    # Haplotype combination exists where variants are < minsize - no call
     call_variants = [
         vcflib.Variant(
             "1", 7395183, '.', "T", ["TTTTGTGTGTGTGTGTGTGTGTGTGTGTGTGTG"],
@@ -70,29 +85,10 @@ def test_evaluate_cluster_unphased1():
         ),
     ]
     g = [(1, x) for x in call_variants]
-    contig = "1"
-    ref = Mock()
-    ref.get = lambda a, b, c: REGION1_REF
-    diff = hap_eval.VCFEvaluator.diff_by_len
     call = hap_eval.VCFEvaluator.evaluate_cluster(g, contig, ref, diff)
     assert call is None
 
-def test_evaluate_cluster_phased3():
-    call_variants = [
-        vcflib.Variant(
-            "1", 7395183, '.', "T", ["TTTTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGATGTCGATACGATGCTAGCTACTGATCG"],
-            100.0, [], {}, [{'GT': '1|0'}], 7395184, None
-        ),
-    ]
-    g = [(1, x) for x in call_variants]
-    contig = "1"
-    ref = Mock()
-    ref.get = lambda a, b, c: REGION1_REF
-    diff = hap_eval.VCFEvaluator.diff_by_len
-    call = hap_eval.VCFEvaluator.evaluate_cluster(g, contig, ref, diff)
-    assert call is "FP"
-
-def test_evaluate_cluster_unphased2():
+    # Unphased variant is > minsize - FP
     call_variants = [
         vcflib.Variant(
             "1", 7395183, '.', "T", ["TTTTGTGTGTGTGTGTGTGTGTGTGTGTGTGTGATGTCGATACGATGCTAGCTACTGATCG"],
@@ -100,9 +96,5 @@ def test_evaluate_cluster_unphased2():
         ),
     ]
     g = [(1, x) for x in call_variants]
-    contig = "1"
-    ref = Mock()
-    ref.get = lambda a, b, c: REGION1_REF
-    diff = hap_eval.VCFEvaluator.diff_by_len
     call = hap_eval.VCFEvaluator.evaluate_cluster(g, contig, ref, diff)
     assert call is "FP"
