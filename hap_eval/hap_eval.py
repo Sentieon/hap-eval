@@ -211,6 +211,62 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
             yield g
 
     @staticmethod
+    def altfrac_cluster(vcfs, c, s, e, pred, altfrac=0.5, maxdist=50000):
+        # Cluster variants together if the fraction of alternate bases is
+        # > altfrac
+        q = []
+        for k, vcf in enumerate(vcfs):
+            if vcf is None:
+                continue
+            i = iter(vcf.range(c, max(0, s-maxdist)))
+            v = next(i, None)
+            while v and not pred(v):
+                v = next(i, None)
+            if v:
+                bisect.insort(q, (v.pos, v.end, k, v, i))
+
+        q_idx, g_idx, ref_bases, alt_bases = [0]*4
+        while q:
+            while q_idx < len(q):
+                pos, end, k, v, i = q[q_idx]
+                if g_idx and pos >= q[g_idx-1][3].end + maxdist:
+                    if q[0][3].pos >= s and q[0][3].pos < e:
+                        yield [(x[2],x[3]) for x in q[:g_idx]]
+                    q = q[g_idx:]
+                    q_idx, g_idx, ref_bases, alt_bases = [0]*4
+                    if pos >= e:
+                        break
+
+                del_bases, ins_bases = len(v.ref), 0
+                for j, a in enumerate(v.alt):
+                    if a == '<DEL>':
+                        del_bases = v.end - v.pos
+                    elif a == '<DUP>':
+                        ins_bases = v.info['SVLEN'][j]
+                    else:
+                        ins_bases = max(ins_bases, len(a))
+                ref_bases += 0 if not q_idx else pos - q[q_idx-1][1]
+                alt_bases += max(del_bases, ins_bases)
+
+                if not g_idx or (alt_bases / (ref_bases + alt_bases)) > altfrac:
+                    g_idx = q_idx + 1
+
+                v = next(i, None)
+                while v and not pred(v):
+                    v = next(i, None)
+                if v:
+                    bisect.insort(q, (v.pos, v.end, k, v, i))
+                q_idx += 1
+            if q[0][3].pos >= s and q[0][3].pos < e:
+                yield [(x[2],x[3]) for x in q[:g_idx]]
+            q = q[g_idx:]
+            q_idx, g_idx, ref_bases, alt_bases = [0]*4
+            if pos >= e:
+                break
+        if q and q[0][3].pos >= s and q[0][3].pos < e:
+            yield [(x[2],x[3]) for x in q]
+
+    @staticmethod
     def maxsize(g):
         sz = [0, 0]
         for v in g:
@@ -237,7 +293,8 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
             v.info['SVLEN'] = svlen
         return True
 
-    def filter(self, v):
+    @staticmethod
+    def filter(v):
         if len(v.filter) > 0 and v.filter[0] != 'PASS':
             return False
         if '.' in v.samples[0]['GT']:
@@ -246,7 +303,7 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
         if svtype == 'BND':
             return False
         if svtype is not None:
-            return self.fixup(v)
+            return VCFEvaluator.fixup(v)
         return True
 
     @staticmethod
