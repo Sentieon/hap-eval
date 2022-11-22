@@ -139,7 +139,12 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
         ('minsize',     50,     'Minimum size of variants to consider', {}),
         ('maxdiff',     0.2,    'Haplotype difference theshold', {}),
         ('metric',      'Levenshtein',
-            'Distance metric', {"choices": ['Levenshtein', 'Length']}),
+            'Distance metric', {'choices': ['Levenshtein', 'Length']}),
+        ('clustering_method',   'Fixed',
+            'Method to use for variant clustering',
+            {'choices': ['AltFraction', 'Fixed']}),
+        ('altfrac',     0.5,
+            'Fraction of alternate bases for AltFraction clustering', {}),
     )
 
     def __init__(self, ref, vcf1, vcf2, bed, args):
@@ -181,7 +186,7 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
             parser.add_argument('--'+k, default=v, type=type(v), help=h, **kwargs)
 
     @staticmethod
-    def cluster(vcfs, c, s, e, maxdist, pred):
+    def cluster(vcfs, c, s, e, pred, maxdist=1000):
         q = []
         for k, vcf in enumerate(vcfs):
             if vcf is None:
@@ -211,10 +216,10 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
             yield g
 
     @staticmethod
-    def altfrac_cluster(vcfs, c, s, e, pred, altfrac=0.5, maxdist=50000):
+    def altfrac_cluster(vcfs, c, s, e, pred, altfrac=0.5, maxdist=5000):
         # Cluster variants together if the fraction of alternate bases is
         # > altfrac
-        q = []
+        q, count = [], 0
         for k, vcf in enumerate(vcfs):
             if vcf is None:
                 continue
@@ -223,24 +228,26 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
             while v and not pred(v):
                 v = next(i, None)
             if v:
-                bisect.insort(q, (v.pos, v.end, k, v, i))
+                bisect.insort(q, (v.pos, v.end, k, count, v, i))
+                count += 1
 
         q_idx, g_idx, ref_bases, alt_bases = [0]*4
         while q:
             while q_idx < len(q):
-                pos, end, k, v, i = q[q_idx]
-                if g_idx and pos >= q[g_idx-1][3].end + maxdist:
-                    if q[0][3].pos >= s and q[0][3].pos < e:
-                        yield [(x[2],x[3]) for x in q[:g_idx]]
+                pos, end, k, _, v, i = q[q_idx]
+                if g_idx and pos >= q[g_idx-1][1] + maxdist:
+                    if q[0][0] >= s and q[0][0] < e:
+                        yield [(x[2],x[4]) for x in q[:g_idx]]
                     q = q[g_idx:]
                     q_idx, g_idx, ref_bases, alt_bases = [0]*4
-                    if pos >= e:
+                    if q[0][0] >= e:
                         break
+                    continue
 
                 del_bases, ins_bases = len(v.ref), 0
                 for j, a in enumerate(v.alt):
                     if a == '<DEL>':
-                        del_bases = v.end - v.pos
+                        del_bases = end - pos
                     elif a == '<DUP>':
                         ins_bases = v.info['SVLEN'][j]
                     else:
@@ -250,21 +257,22 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
 
                 if not g_idx or (alt_bases / (ref_bases + alt_bases)) > altfrac:
                     g_idx = q_idx + 1
-
-                v = next(i, None)
-                while v and not pred(v):
-                    v = next(i, None)
-                if v:
-                    bisect.insort(q, (v.pos, v.end, k, v, i))
                 q_idx += 1
-            if q[0][3].pos >= s and q[0][3].pos < e:
-                yield [(x[2],x[3]) for x in q[:g_idx]]
+
+                if not any(x[2] == k for x in q[q_idx:]):
+                    v = next(i, None)
+                    while v and not pred(v):
+                        v = next(i, None)
+                    if v:
+                        bisect.insort(q, (v.pos, v.end, k, count, v, i))
+                        count += 1
+
+            if not g_idx:
+                break
+            if q[0][0] >= s and q[0][0] < e:
+                yield [(x[2],x[4]) for x in q[:g_idx]]
             q = q[g_idx:]
             q_idx, g_idx, ref_bases, alt_bases = [0]*4
-            if pos >= e:
-                break
-        if q and q[0][3].pos >= s and q[0][3].pos < e:
-            yield [(x[2],x[3]) for x in q]
 
     @staticmethod
     def maxsize(g):
@@ -477,7 +485,14 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
                     file=sys.stderr
                 )
         maxdist = self.args.maxdist
-        for g in self.cluster(vcfs, contig, start, end, maxdist, pred):
+        cluster = functools.partial(
+            self.altfrac_cluster, altfrac=self.args.altfrac
+        )
+        if self.args.clustering_method == 'Fixed':
+            cluster = self.cluster
+        for g in cluster(
+            vcfs, contig, start, end, pred, maxdist=maxdist
+        ):
             call = self.evaluate_cluster(
                 g,
                 contig,
