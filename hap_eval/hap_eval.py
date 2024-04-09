@@ -243,7 +243,7 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
         if '.' in v.samples[0]['GT']:
             return False
         svtype = v.info.get('SVTYPE')
-        if svtype == 'BND':
+        if svtype in ['BND','INV']:
             return False
         if svtype is not None:
             return self.fixup(v)
