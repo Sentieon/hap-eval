@@ -26,19 +26,21 @@ optional arguments:
   -c VCF, --comp VCF    Comparison vcf file
   -i BED, --interval BED
                         Evaluation region file
+  --tr_bed BED          Tandem repeat BED file
   -t INT, --thread_count INT
                         Number of threads
   --base_out VCF        Annotated baseline vcf file
   --comp_out VCF        Annotated comparison vcf file
-  --maxdist INT         Maximum distance to cluster variants (default: 1000)
   --minsize INT         Minimum size of variants to consider (default: 50)
   --maxdiff FLOAT       Haplotype difference threshold (default: 0.2)
   --metric STR          Distance metric (default: Levenshtein)
 ```
 
-### Clustering, `--maxdist` and `--minsize`
+### Clustering, `--tr_bed`, and `--minsize`
 
-hap-eval evaluates groups (clusters) of variants that are nearby on the reference genome. Variants are grouped together if the distance between two variants is less than `--maxdist`. The entire group will be evaluated if the largest possible haplotype that can be constructed from the group has an insertion or deletion variant larger than `--minsize`.
+hap-eval evaluates groups (clusters) of variants that are nearby on the reference genome. Variants are grouped together if the distance between two variants is small relative to the variant size. If the variant group extends into a known tandem repeat (from the `--tr_bed` file), the group will be extended to the end of the tandem repeat. The entire group will be evaluated if the largest possible haplotype that can be constructed from the group has an insertion or deletion variant larger than `--minsize`.
+
+Using a `--tr_bed` bed file highly recommended as different structural variant callers may place structural variants at different locations along a tandem repeat. A tandem repeat bed file for hg38 is provided in the [/data](/data) directory.
 
 Some examples are shown below. For the purpose of demonstration, these examples use a baseline VCF (`--base`), but an empty comparison VCF `--comp`.
 
@@ -46,26 +48,23 @@ Some examples are shown below. For the purpose of demonstration, these examples 
 
 The baseline VCF has the following variants:
 ```txt
-chr1    1541864 .       T       C       30      .       LCR=0   GT:AD   0|1:1,1
-chr1    1542773 .       T       C       30      .       LCR=0   GT:AD   0|1:1,1
-chr1    1542793 .       C       G       30      .       LCR=0   GT:AD   0|1:1,1
-chr1    1542800 .       T       C       30      .       LCR=0   GT:AD   0|1:1,1
-chr1    1543500 .       T       G       30      .       LCR=0   GT:AD   0|1:1,1
-chr1    1543725 .       C       CCTCTGTCACGGCCTCGGCCACTCCCCACTGTCACGGCCTCGGCCACTCCCCTCTGTCACGGCCTCGGCCACTCCCCTCTGTCACGGCCTCGGCCACTCCCCACTGTCACGGCCTCGGCCACTCCCCACTGTCACGGCCTCGGCCACTCCCCTCTGTCACGGCCTCGGCCACTCCCCACTGTCACGGCCTCGGCCACTCCCCT       30      .       TRF;TRFdiff=8.1;TRFrepeat=TCACGGCCTCGGCCACTCCCCTCTG;TRFovl=1;TRFstart=1543581;TRFend=1543840;TRFperiod=25;TRFcopies=18.7;TRFscore=672;TRFentropy=1.75;TRFsim=0.97;SVTYPE=INS;SVLEN=202;LCR=0.864133;REMAP=tandem        GT:AD   0|1:1,1
-chr1    1543953 .       A       G       30      .       LCR=0   GT:AD   0|1:1,1
+chr1    1948926 .       T       C       30      .       TRF;LCR=0       GT:AD   1|0:1,1
+chr1    1948934 .       T       TCCCTCCCTTCTTTCCTTCCCTTTCCCTCCCTCCCTTCCTTCCTCTTTCCTTCCTTCCTTTCCCTCCCTTACTCCTTCCTTCCTTCCCTTCCCCTTCCTTCTTCCTTCTCTC        30      .       TRF;TRFdiff=0;TRFrepeat=CCTTCCTTCCTTC;TRFovl=1;TRFstart=1948876;TRFend=1949289;TRFperiod=13;TRFcopies=32;TRFscore=633;TRFentropy=1.04;SVTYPE=INS;SVLEN=111;RM_score=35;RM_repeat=(TCCC)N;RM_clsfam=Simple_repeat;LCR=0.529985;REMAP=interspersed        GT:AD   1|0:1,1
+chr1    1948942 .       T       C       30      .       TRF;LCR=0       GT:AD   1|0:1,1
+chr1    1948947 .       T       C       30      .       TRF;LCR=0       GT:AD   1|0:1,1
 ```
 
-These variants are grouped together as they are all less than `--maxdist` (1000bp) from each other, evaluated as a single region by hap-eval, and contributed one `FN` to the overall evaluation (as there is no comparison VCF).
+These variants are grouped together as they are relatively close to the insertion allele. They are evaluated as a single region by hap-eval, and contributed one `FN` to the overall evaluation (as there is no comparison VCF).
 
 ```txt
-FN chr1:1541764-1544053 7 0 2290 (0,202) (0,0) 1.0
+FN chr1:1948826-1949047 4 0 222 (111,0) (0,0) 1.0
 ```
 
-#### Variants further than `--maxdist`
+#### Distant variants are not grouped
 
 The baseline VCF has the following variants:
 ```txt
-chr1    1981820 .       A       ACCGCGGACAGACACGGGGGCACGCAGGACACCCAGCCGCGGACAGACACGGGGGCACGCAGGACACCCAG         30      .       TRF;TRFdiff=2;TRFrepeat=ACACCCAGCCGCGGACAGACACGGGGGCACGCAGG;TRFovl=1;TRFstart=1981391;TRFend=1982440;TRFperiod=35;TRFcopies=31.9;TRFscore=2263;TRFentropy=1.71;TRFsim=1;SVTYPE=INS;SVLEN=70;LCR=0.785201;REMAP=tandem   GT:AD   1|1:0,2
+chr1    1981820 .       A       ACCGCGGACAGACACGGGGGCACGCAGGACACCCAGCCGCGGACAGACACGGGGGCACGCAGGACACCCAG 30      .       TRF;TRFdiff=2;TRFrepeat=ACACCCAGCCGCGGACAGACACGGGGGCACGCAGG;TRFovl=1;TRFstart=1981391;TRFend=1982440;TRFperiod=35;TRFcopies=31.9;TRFscore=2263;TRFentropy=1.71;TRFsim=1;SVTYPE=INS;SVLEN=70;LCR=0.785201;REMAP=tandem   GT:AD   1|1:0,2
 chr1    1986432 .       T       A       30      .       LCR=0   GT:AD   1|1:0,2
 chr1    1986564 .       G       A       30      .       LCR=0   GT:AD   0|1:1,1
 chr1    1991395 .       T       C       30      .       LCR=0   GT:AD   1|1:0,2
@@ -78,52 +77,30 @@ chr1    1991867 .       A       G       30      .       LCR=0   GT:AD   0|1:1,1
 chr1    1992226 .       A       G       30      .       LCR=0   GT:AD   1|1:0,2
 chr1    1992242 .       A       G       30      .       LCR=0   GT:AD   0|1:1,1
 chr1    1993704 .       A       AGGGCACAGTGGCTCATGCCTGTAATCCCAGCAACATGGGAGCCTGAGGTGGGAGGCTCTCTTGAGGCCAGGAGTTTGAGACCAGCCTGGGCAACATAGTGAGACCCCCCACCCCCCGCCATTTCTAGGAAAAAAAAAAAAAGTGGCC    30      .       SVTYPE=INS;SVLEN=147;RM_score=113;RM_repeat=FLAM_C;RM_clsfam=SINE/Alu;LCR=0.98366;REMAP=partial GT:AD   1|1:0,2
-chr1    1993887 .       C       A       30      .       LCR=0   GT:AD   1|1:0,2
-chr1    1993898 .       C       T       30      .       LCR=0   GT:AD   1|1:0,2
-chr1    1994025 .       C       T       30      .       LCR=0   GT:AD   1|1:0,2
 ```
 
-These variants are split into two groups, as the distance between the variant at `chr1:1981820` and the variant at `chr1:1986432` greater than `--maxdist` (default 1000). Many of the SNVs are not included in either group.
+These variants are split into two groups, as the distance between the variant at `chr1:1981820` and the variant at `chr1:1993704` is relatively large and the insertions are relatively small. The intervening SNVs are not included in either group.
 
 ```txt
-FN chr1:1981720-1981920 1 0 201 (70,70) (0,0) 1.0
-FN chr1:1993604-1994125 4 0 522 (147,147) (0,0) 1.0
-```
-
-#### Grouping of deletions
-
-The baseline VCF has the following variants:
-```txt
-chr1    3643863 .       CGGCCCCGCTGAGCCCCGGACATGGGGTCGCGCCTTCGGAAGGGGACCCAGCGGCCCCGCTGAGCCCCGGACATGGGGTCGCGCCTTCGGAAGGGGACCCAGCGGCCCCGCTGAGCCCCGGACATGGGGTCGCGCCTTCGGAAGGGGACCCAGCGGCCCCGCTGAGCCCCGGACATGGGGTCGCGCCTTCGGAAGGGGACCCAGCGGCCCCGCTGAGCCCCGGACATGGGGTCGCGCCTTCGGAAGGGGACCCAGCGGCCCCGCTGAGCCCCGGACATGGGGTCGCGCCTTCGGAAGGGGACCCAGCGGCCCCGCTGAGCCCCGGACATGGGGTCGCGCCTTCGGAAGGGGACCCAGCGGCCCCGCTGAGCCCCGGACATGGGGTCGCGCCTTCGGAAGGGGACCCAGCGGCCCCGCTGAGCCCCGGACATGGGGTCGCGCCTTCGGAAGGGGACCCAGCGGCCCCGCTGAGCCCCGGACATGGGGTCGCGCCTTCGGAAGGGGATCCAGT C       30      .       TRF;TRFdiff=-10;TRFrepeat=TGGGGTCGCGCCTTCGGAAGGGGACCCAGCGGCCCCGCTGAGCCCCGGACA;TRFovl=1;TRFstart=3643528;TRFend=3644432;TRFperiod=51;TRFcopies=7.8;TRFscore=2578;TRFentropy=1.8;SVTYPE=DEL;SVLEN=510;LCR=0.894375;REMAP=tandem   GT:AD   1|1:0,2
-chr1    3645341 .       AGCGGCGCAGCGGGATGGGCGGGTTGCCCCGTGGTGTGCGTGGCGCAGCGGGACGGGCGGGTTGCCCCGTGGTGTGC   A       30      .       TRF;TRFdiff=-2;TRFrepeat=CGTGGTGTGCGCGGCGCAGCGGGACGGGCGGGTTGCCC;TRFovl=1;TRFstart=3645293;TRFend=3645554;TRFperiod=38;TRFcopies=4.9;TRFscore=666;TRFentropy=1.66;SVTYPE=DEL;SVLEN=76;LCR=0.83505;REMAP=tandem   GT:AD   1|1:0,2
-chr1    3645458 .       C       G       30      .       TRF;LCR=0       GT:AD   1|1:0,2
-chr1    3645460 .       T       C       30      .       TRF;LCR=0       GT:AD   1|1:0,2
-chr1    3646061 .       C       G       30      .       LCR=0   GT:AD   0|1:1,1
-```
-
-The first deletion extends 510bp over the reference genome. This extension allows the two deletions to be grouped, even if `chr1:3645341` is more than `--maxdist` from `chr1:3643863`.
-
-```txt
-FN chr1:3643763-3646161 5 0 2399 (-586,-586) (0,0) 1.0
+FN chr1:1981720-1982541 1 0 822 (70,70) (0,0) 1.0
+FN chr1:1993604-1993804 1 0 201 (147,147) (0,0) 1.0
 ```
 
 #### Multiple variants exceeding `--minsize`
 
 The baseline VCF has the following variants:
 ```txt
-chr1    5700440 .       A       G       30      .       LCR=0   GT:AD   1|1:0,2
-chr1    5700987 .       A       T       30      .       LCR=0   GT:AD   1|1:0,2
-chr1    5701753 .       G       GAGAGAAAGAAAGAAAGAAAGAAAGAAAGAAAGAA     30      .       TRF;TRFdiff=0;TRFrepeat=GAAA;TRFovl=1;TRFstart=5701732;TRFend=5701949;TRFperiod=4;TRFcopies=54.2;TRFscore=297;TRFentropy=1.01;SVTYPE=INS;SVLEN=34;RM_score=34;RM_repeat=(AGAA)N;RM_clsfam=Simple_repeat;LCR=0.43156;REMAP=interspersed  GT:AD   1|1:0,2
-chr1    5701872 .       G       GAGGGAGGAAGGAAGGAAGGA   30      .       TRF;TRFdiff=5;TRFrepeat=GAAG;TRFovl=1;TRFstart=5701732;TRFend=5701921;TRFperiod=4;TRFcopies=50;TRFscore=226;TRFentropy=1.06;TRFsim=0.925;SVTYPE=INS;SVLEN=20;LCR=0.492614;REMAP=interspersed    GT:AD   0|1:1,1
-chr1    5701908 .       A       AAGGAAGGAAGGAAGGAAGGAAGGAAGGG   30      .       TRF;TRFdiff=7;TRFrepeat=GAAG;TRFovl=1;TRFstart=5701732;TRFend=5701921;TRFperiod=4;TRFcopies=52;TRFscore=226;TRFentropy=1.06;TRFsim=0.946;SVTYPE=INS;SVLEN=28;RM_score=30;RM_repeat=(AAGG)N;RM_clsfam=Simple_repeat;LCR=0.499571;REMAP=interspersed      GT:AD   1|0:0,1
-chr1    5701908 .       A       G       30      .       TRF;LCR=0       GT:AD   0|1:0,1
-chr1    5702582 .       G       A       30      .       LCR=0   GT:AD   1|0:1,1
+chr1    16166161        .       G       GCCATCCATCCAGCCATCCAT   30      .       TRF;TRFdiff=0;TRFrepeat=TCCA;TRFovl=1;TRFstart=16166148;TRFend=16166283;TRFperiod=4;TRFcopies=33.8;TRFscore=325;TRFentropy=1.65;SVTYPE=INS;SVLEN=20;LCR=0.890708;REMAP=interspersed     GT:AD   1|0:1,1
+chr1    16166181        .       T       G       30      .       TRF;LCR=0       GT:AD   1|0:0,1
+chr1    16166181        .       TCCATCCATCCATCCATCCAG   T       30      .       TRF;TRFdiff=-2.5;TRFrepeat=TCCCTCCT;TRFovl=1;TRFstart=16166164;TRFend=16166283;TRFperiod=8;TRFcopies=12.6;TRFscore=73;TRFentropy=1.6;SVTYPE=DEL;SVLEN=20;LCR=0.852383;REMAP=interspersed        GT:AD   0|1:0,1
+chr1    16166229        .       T       TCCATCCATCCATCCATCCATCCATCCAGCCATCCATCCATCCATCCAG       30      .
+       TRF;TRFdiff=0;TRFrepeat=TCCA;TRFovl=1;TRFstart=16166148;TRFend=16166311;TRFperiod=4;TRFcopies=40.8;TRFscore=399;TRFentropy=1.65;SVTYPE=INS;SVLEN=48;RM_score=48;RM_repeat=(TCCA)N;RM_clsfam=Simple_repeat;LCR=0.83682;REMAP=tandem      GT:AD   1|0:1,1
 ```
 
 Individually, each of these variants is smaller than `--minsize`. However, they can be combined together into a haplotype larger than `--minsize`. Accordingly, they are evaluated as a group by hap-eval.
 
 ```txt
-FN chr1:5700340-5702682 7 0 2343 (62,54) (0,0) 1.0
+FN chr1:16166061-16166329 4 0 269 (68,-20) (0,0) 1.0
 ```
 
 #### Variants less than `--minsize`
