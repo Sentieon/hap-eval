@@ -3,6 +3,7 @@ from __future__ import print_function
 import argparse
 import bisect
 import collections
+from collections.abc import Callable
 import functools
 import heapq
 import io
@@ -11,6 +12,7 @@ import operator
 import os
 import re
 import sys
+from typing import Generator, Iterable, List, Tuple
 import tempfile
 import vcflib
 
@@ -133,20 +135,143 @@ class IntervalList(object):
         r = self.regions.get(c)
         return r and bisect.bisect_right(r, s) % 2 != 0
 
+def extend_event(
+    event_size: int,
+    base_extend: int = 20,
+    extend_frac: float = 0.2,
+    max_extend: int = 10000,
+) -> int:
+    '''Extension around events for grouping'''
+    return min(event_size * extend_frac + base_extend, max_extend)
+
+class VariantGroup(object):
+    '''A group of variants'''
+    def __init__(self, extend_func: Callable[[int], int]):
+        self.data: List[Tuple[int, vcflib.Variant]] = []
+        self.end = -1
+        self.end_extend = -1
+        self.extend_func = extend_func
+
+    def __iter__(self):
+        return iter(self.data)
+
+    def __bool__(self):
+        return bool(self.data)
+
+    def append(self, d: Tuple[int, vcflib.Variant]):
+        self.data.append(d)
+        self.end = max(self.end, d[1].end)
+        variant_size = max([len(x) for x in [d[1].ref] + d[1].alt])
+        extend_dist = self.extend_func(variant_size)
+        self.end_extend = max(self.end_extend, d[1].end + extend_dist)
+
+    def tr_extend(self, _tr_s: int, tr_e: int):
+        '''Extend the group across a tandem repeat'''
+        self.end = max(self.end, tr_e)
+
+class VariantGrouper(object):
+    '''Group variants from multiple VCFs by distance'''
+    def __init__(
+        self,
+        vcfs: Iterable[vcflib.VCF],
+        contig: str,
+        start: int,
+        end: int,
+        pred: Callable[[vcflib.Variant], bool],
+        extend_func: Callable[[int], int] = functools.partial(extend_event, base_extend=20, extend_frac=0.2, max_extend=10000),
+        tr_bed: IntervalList | None = None,
+    ):
+        self.vcfs = vcfs
+        self.contig = contig
+        self.start = start
+        self.end = end
+        self.pred = pred
+        self.tr_bed = tr_bed
+        self.extend_func = extend_func
+
+        self.maxdist = extend_func(999999999999)
+
+    def cluster(self) -> Generator[VariantGroup, None, None]:
+        '''Cluster variants in the VCF'''
+        q = []
+        for k, vcf in enumerate(self.vcfs):
+            if vcf is None:
+                continue
+            i = iter(vcf.range(self.contig, self.start-self.maxdist))
+            v = next(i, None)
+            while v and not self.pred(v):
+                v = next(i, None)
+            if v:
+                heapq.heappush(q, (v.pos, v.end, k, v, i))
+
+        p1: List[Tuple[int, int, int, vcflib.Variant]] = []
+        p2: List[Tuple[int, int, int, vcflib.Variant]] = []
+        g = VariantGroup(self.extend_func)
+        while q or p1:
+            if p1:
+                pos, end, k, v = p1.pop(0)
+            else:
+                pos, end, k, v, i = heapq.heappop(q)
+                v2 = next(i, None)
+                while v2 and not self.pred(v2):
+                    v2 = next(i, None)
+                if v2:
+                    heapq.heappush(q, (v2.pos, v2.end, k, v2, i))
+
+            if not g:
+                if pos >= self.end:
+                    break
+                else:
+                    g.append((k, v))
+                    # extend the group if overlapping a tandem repeat
+                    if self.tr_bed:
+                        tr_regions = self.tr_bed.get(self.contig, g.data[0][1].pos, g.end_extend)
+                        for tr_region in tr_regions:
+                            g.tr_extend(*tr_region)
+                    continue
+
+            variant_size = max([len(x) for x in [v.ref] + v.alt])
+            extend_dist = self.extend_func(variant_size)
+            if pos >= g.end + self.maxdist:
+                # This variant is too far from the group
+                if g and g.data[0][1].pos >= self.start and g.data[0][1].pos < self.end:
+                    yield g
+                g = VariantGroup(self.extend_func)
+                p1 = p2 + p1
+                p1.append((pos, end, k, v))
+                p2 = []
+            elif pos <= g.end_extend or g.end >= (pos - extend_dist):
+                # This variant is close enough to add to the group after the variants in the queue
+                for _, _, k2, v2 in p2:
+                    g.append((k2, v2))
+                p2 = []
+                g.append((k, v))
+
+                # extend the group if overlapping a tandem repeat
+                if self.tr_bed:
+                    tr_regions = self.tr_bed.get(self.contig, g.data[0][1].pos, g.end_extend)
+                    for tr_region in tr_regions:
+                        g.tr_extend(*tr_region)
+            else:
+                # This variant is an intermediate distance from the group, add to a queue
+                p2.append((pos, end, k, v))
+        if g and g.data[0][1].pos >= self.start and g.data[0][1].pos < self.end:
+            yield g
+
 class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
     params = ( # name, defval, descr, kwargs
-        ('maxdist',     1000,   'Maximum distance to cluster variants', {}),
         ('minsize',     50,     'Minimum size of variants to consider', {}),
         ('maxdiff',     0.2,    'Haplotype difference theshold', {}),
         ('metric',      'Levenshtein',
             'Distance metric', {"choices": ['Levenshtein', 'Length']}),
     )
 
-    def __init__(self, ref, vcf1, vcf2, bed, args):
+    def __init__(self, ref, vcf1, vcf2, bed, tr_bed, args):
         self.ref = Reference(ref)
         self.vcf1 = vcflib.VCF(vcf1)
         self.vcf2 = vcflib.VCF(vcf2)
         self.bed = bed and IntervalList(bed) or None
+        self.tr_bed = tr_bed and IntervalList(tr_bed) or None
         self.args = args
         self.log = None
 
@@ -179,36 +304,6 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
         for k,v,h,kwargs in cls.params:
             h += ' (default: %(default)s)'
             parser.add_argument('--'+k, default=v, type=type(v), help=h, **kwargs)
-
-    @staticmethod
-    def cluster(vcfs, c, s, e, maxdist, pred):
-        q = []
-        for k, vcf in enumerate(vcfs):
-            if vcf is None:
-                continue
-            i = iter(vcf.range(c, s-maxdist))
-            v = next(i, None)
-            while v and not pred(v):
-                v = next(i, None)
-            if v:
-                heapq.heappush(q, (v.pos, v.end, k, v, i))
-        g = []
-        while q:
-            pos, end, k, v, i = heapq.heappop(q)
-            if g and pos >= g[-1][1].end + maxdist:
-                if g[0][1].pos >= s and g[0][1].pos < e:
-                    yield g
-                g = []
-                if pos >= e:
-                    break
-            g.append((k, v))
-            v = next(i, None)
-            while v and not pred(v):
-                v = next(i, None)
-            if v:
-                heapq.heappush(q, (v.pos, v.end, k, v, i))
-        if g and g[0][1].pos >= s and g[0][1].pos < e:
-            yield g
 
     @staticmethod
     def maxsize(g):
@@ -283,10 +378,10 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
         for b in itertools.product(*combos):
             if not b:
                 continue
-            h = [r] * len(b[0])
-            for j,p in enumerate(zip(*b)):
+            h = [r] * len(b[0])  # multiple haplotypes for diploid or polyploid samples
+            for j,p in enumerate(zip(*b)):  # j = haplotype index
                 t = s
-                for i in range(len(p)):
+                for i in range(len(p)):  # each variant allele
                     if p[i] == 0:
                         continue
                     v = g[i]
@@ -329,7 +424,7 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
     def evaluate_cluster(
         g, contig, ref, diff, bed=None, maxdiff=0.2, minsize=50, log=sys.stdout
     ):
-        c, s, e = contig, g[0][1].pos, g[-1][1].end
+        c, s, e = contig, g.data[0][1].pos, g.end
         if bed and not bed.get(c, s, e):
             return None
         g0 = [x[1] for x in g if x[0] == 0]
@@ -419,8 +514,8 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
                     ' comparison.',
                     file=sys.stderr
                 )
-        maxdist = self.args.maxdist
-        for g in self.cluster(vcfs, contig, start, end, maxdist, pred):
+        grouper = VariantGrouper(vcfs, contig, start, end, pred, tr_bed=self.tr_bed)
+        for g in grouper.cluster():
             call = self.evaluate_cluster(
                 g,
                 contig,
@@ -436,7 +531,7 @@ class VCFEvaluator(vcflib.Shardable, vcflib.ShardResult):
 
             g0 = [x[1] for x in g if x[0] == 0]
             g1 = [x[1] for x in g if x[0] == 1]
-            call_region = "{}:{}-{}".format(contig, g[0][1].pos, g[-1][1].end)
+            call_region = "{}:{}-{}".format(contig, g.data[0][1].pos, g.end)
             for out_vcf, g, err in zip(
                 (base_out, comp_out), (g0, g1), ('FN', 'FP')
             ):
@@ -470,6 +565,8 @@ def parse_args(argv=None):
         help='Comparison vcf file')
     parser.add_argument('-i', '--interval', required=False, metavar='BED',
         help='Evaluation region file', dest='bed')
+    parser.add_argument('--tr_bed', metavar='BED',
+        help='Tandem repeat BED file')
     parser.add_argument('-t', '--thread_count', required=False, type=int,
         help='Number of threads', dest='nthr')
     parser.add_argument('--base_out', metavar='VCF',
@@ -484,7 +581,9 @@ def parse_args(argv=None):
 
 def main():
     args = parse_args()
-    eval = VCFEvaluator(args.ref, args.base, args.comp, args.bed, args)
+    eval = VCFEvaluator(
+        args.ref, args.base, args.comp, args.bed, args.tr_bed, args
+    )
 
     out_vcfs = []
     for vcf, out_vcf in zip(
